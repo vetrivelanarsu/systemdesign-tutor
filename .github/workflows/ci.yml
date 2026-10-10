@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: cp .env.example .env
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: docker compose up -d --wait
+      - run: pnpm db:migrate
+      - run: pnpm test:integration
+      - run: pnpm build
+      - name: Check the running production app
+        shell: bash
+        run: |
+          pnpm start > /tmp/tutor-next.log 2>&1 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health > /tmp/tutor-health.json; then
+              curl --fail --silent http://127.0.0.1:3000/ > /dev/null
+              cat /tmp/tutor-health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/tutor-next.log
+          exit 1
+      - name: Stop local services
+        if: always()
+        run: docker compose down
